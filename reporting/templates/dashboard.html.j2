@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AutoRecon Pro | {{ target }}</title>
+<style>
+  :root {
+    --bg: #0d1117; --card: #161b22; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e; --accent: #238636;
+    --crit: #da3633; --high: #fb8500; --med: #d29922;
+    --low: #1f6feb; --info: #6e7681;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; }
+  a { color: #58a6ff; text-decoration: none; }
+  /* Header */
+  .header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .logo { font-size: 20px; font-weight: 700; color: #58a6ff; letter-spacing: -0.5px; }
+  .logo span { color: var(--accent); }
+  .scan-meta { font-size: 12px; color: var(--muted); text-align: right; }
+  /* Layout */
+  .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
+  /* Summary Cards */
+  .cards { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 24px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; text-align: center; }
+  .card-count { font-size: 36px; font-weight: 700; }
+  .card-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-top: 4px; }
+  .crit-card .card-count { color: var(--crit); }
+  .high-card .card-count { color: var(--high); }
+  .med-card .card-count { color: var(--med); }
+  .low-card .card-count { color: var(--low); }
+  .info-card .card-count { color: var(--info); }
+  /* Stat Row */
+  .stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
+  .stat-box { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; }
+  .stat-box .stat-val { font-size: 22px; font-weight: 700; color: #58a6ff; }
+  .stat-box .stat-lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 2px; }
+  /* Charts Row */
+  .charts-row { display: grid; grid-template-columns: 1fr 2fr; gap: 16px; margin-bottom: 24px; }
+  .chart-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
+  .chart-card h3 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 16px; }
+  .chart-wrap { position: relative; height: 220px; }
+  /* Findings Table */
+  .section { background: var(--card); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 24px; overflow: hidden; }
+  .section-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  .section-header h2 { font-size: 15px; font-weight: 600; }
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; }
+  .filter-btn { padding: 4px 12px; border-radius: 20px; border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; font-size: 12px; transition: all 0.15s; }
+  .filter-btn:hover, .filter-btn.active { background: #238636; border-color: #238636; }
+  .search-box { padding: 6px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; width: 220px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { padding: 10px 16px; text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--card); cursor: pointer; user-select: none; }
+  th:hover { color: var(--text); }
+  td { padding: 10px 16px; border-bottom: 1px solid #1c2128; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,0.03); }
+  .url-cell { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: 12px; color: #58a6ff; }
+  .badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; }
+  .badge-Critical { background: rgba(218,54,51,0.2); color: var(--crit); border: 1px solid rgba(218,54,51,0.4); }
+  .badge-High { background: rgba(251,133,0,0.2); color: var(--high); border: 1px solid rgba(251,133,0,0.4); }
+  .badge-Medium { background: rgba(210,153,34,0.2); color: var(--med); border: 1px solid rgba(210,153,34,0.4); }
+  .badge-Low { background: rgba(31,111,235,0.2); color: var(--low); border: 1px solid rgba(31,111,235,0.4); }
+  .badge-Info { background: rgba(110,118,129,0.2); color: var(--info); border: 1px solid rgba(110,118,129,0.4); }
+  .source-badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: rgba(88,166,255,0.15); color: #58a6ff; border: 1px solid rgba(88,166,255,0.3); }
+  .nuclei-badge { background: rgba(188,140,255,0.15); color: #bc8cff; border-color: rgba(188,140,255,0.3); }
+  .btn { padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: #58a6ff; cursor: pointer; font-size: 12px; }
+  .btn:hover { border-color: #58a6ff; }
+  /* Modal */
+  .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 1000; overflow-y: auto; }
+  .modal-overlay.open { display: flex; align-items: flex-start; justify-content: center; padding: 40px 20px; }
+  .modal { background: var(--card); border: 1px solid var(--border); border-radius: 12px; width: 100%; max-width: 800px; max-height: 85vh; overflow-y: auto; }
+  .modal-header { padding: 20px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .modal-header h3 { font-size: 16px; font-weight: 700; }
+  .modal-close { font-size: 20px; cursor: pointer; color: var(--muted); flex-shrink: 0; line-height: 1; }
+  .modal-close:hover { color: var(--text); }
+  .modal-body { padding: 20px 24px; }
+  .modal-section { margin-bottom: 20px; }
+  .modal-section label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); display: block; margin-bottom: 8px; }
+  .code-block { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; color: #adbac7; max-height: 200px; overflow-y: auto; }
+  .copy-btn { margin-top: 6px; padding: 4px 10px; background: rgba(35,134,54,0.2); border: 1px solid rgba(35,134,54,0.4); border-radius: 6px; color: var(--accent); cursor: pointer; font-size: 11px; font-weight: 600; }
+  .copy-btn:hover { background: rgba(35,134,54,0.4); }
+  /* Subdomain table */
+  .live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .live-dot.live { background: var(--accent); }
+  .live-dot.dead { background: var(--border); }
+  .tech-tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; background: rgba(31,111,235,0.15); color: #79c0ff; border: 1px solid rgba(31,111,235,0.2); margin: 1px; }
+  .table-wrap { overflow-x: auto; max-height: 500px; overflow-y: auto; }
+  /* Empty state */
+  .empty { text-align: center; padding: 40px; color: var(--muted); font-size: 14px; }
+  /* Footer */
+  .footer { text-align: center; padding: 24px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--border); }
+  /* Responsive */
+  @media (max-width: 900px) {
+    .cards { grid-template-columns: repeat(3, 1fr); }
+    .stat-row { grid-template-columns: repeat(2, 1fr); }
+    .charts-row { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="logo">Auto<span>Recon</span> Pro</div>
+    <div style="font-size:12px;color:var(--muted);margin-top:2px;">Bug Bounty Automation · Zero Cost · Full Pipeline</div>
+  </div>
+  <div class="scan-meta">
+    <div><strong style="color:var(--text)">Target:</strong> {{ target }}</div>
+    <div><strong>Scan ID:</strong> {{ scan_id }}</div>
+    <div>Generated: {{ generated_at }}</div>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- Summary Cards -->
+  <div class="cards">
+    <div class="card crit-card">
+      <div class="card-count">{{ severity_counts.Critical }}</div>
+      <div class="card-label">Critical</div>
+    </div>
+    <div class="card high-card">
+      <div class="card-count">{{ severity_counts.High }}</div>
+      <div class="card-label">High</div>
+    </div>
+    <div class="card med-card">
+      <div class="card-count">{{ severity_counts.Medium }}</div>
+      <div class="card-label">Medium</div>
+    </div>
+    <div class="card low-card">
+      <div class="card-count">{{ severity_counts.Low }}</div>
+      <div class="card-label">Low</div>
+    </div>
+    <div class="card info-card">
+      <div class="card-count">{{ severity_counts.Info }}</div>
+      <div class="card-label">Info</div>
+    </div>
+  </div>
+
+  <!-- Stat Row -->
+  <div class="stat-row">
+    <div class="stat-box"><div class="stat-val">{{ total_findings }}</div><div class="stat-lbl">Total Findings</div></div>
+    <div class="stat-box"><div class="stat-val">{{ live_subdomains }}</div><div class="stat-lbl">Live Hosts / {{ total_subdomains }} Found</div></div>
+    <div class="stat-box"><div class="stat-val">{{ total_endpoints }}</div><div class="stat-lbl">Endpoints Mapped</div></div>
+    <div class="stat-box"><div class="stat-val">{{ started_at[:10] if started_at else 'N/A' }}</div><div class="stat-lbl">Scan Date</div></div>
+  </div>
+
+  <!-- Charts -->
+  <div class="charts-row">
+    <div class="chart-card">
+      <h3>Vulnerability Types</h3>
+      <div class="chart-wrap"><canvas id="typeChart"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>Top Hosts by Findings</h3>
+      <div class="chart-wrap"><canvas id="hostChart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Findings Table -->
+  <div class="section">
+    <div class="section-header">
+      <h2>Findings ({{ total_findings }})</h2>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <input class="search-box" id="searchBox" placeholder="Search findings..." oninput="filterFindings()">
+        <div class="filters">
+          <button class="filter-btn active" onclick="setSevFilter(this,'all')">All</button>
+          <button class="filter-btn" onclick="setSevFilter(this,'Critical')" style="color:var(--crit)">Critical</button>
+          <button class="filter-btn" onclick="setSevFilter(this,'High')" style="color:var(--high)">High</button>
+          <button class="filter-btn" onclick="setSevFilter(this,'Medium')" style="color:var(--med)">Medium</button>
+          <button class="filter-btn" onclick="setSevFilter(this,'Low')" style="color:var(--low)">Low</button>
+          <button class="filter-btn" onclick="setSevFilter(this,'Info')" style="color:var(--info)">Info</button>
+        </div>
+      </div>
+    </div>
+    <div class="table-wrap">
+    {% if findings %}
+    <table id="findingsTable">
+      <thead>
+        <tr>
+          <th onclick="sortTable(0)"># ↕</th>
+          <th onclick="sortTable(1)">Severity ↕</th>
+          <th onclick="sortTable(2)">Type ↕</th>
+          <th>URL</th>
+          <th>Parameter</th>
+          <th>Source</th>
+          <th>Details</th>
+        </tr>
+      </thead>
+      <tbody id="findingsBody">
+      {% for f in findings %}
+      <tr data-severity="{{ f.severity }}" data-search="{{ (f.type + ' ' + f.url + ' ' + f.parameter)|lower }}">
+        <td style="color:var(--muted)">{{ f.id }}</td>
+        <td><span class="badge badge-{{ f.severity }}">{{ f.severity }}</span></td>
+        <td style="max-width:200px;white-space:normal;font-size:12px;">{{ f.type }}</td>
+        <td><div class="url-cell" title="{{ f.url }}">{{ f.url }}</div></td>
+        <td style="font-family:monospace;font-size:12px;color:#7ee787;">{{ f.parameter or '—' }}</td>
+        <td>
+          {% if f.source == 'nuclei' %}
+          <span class="source-badge nuclei-badge">Nuclei</span>
+          {% else %}
+          <span class="source-badge">AutoRecon</span>
+          {% endif %}
+        </td>
+        <td><button class="btn" onclick="showFinding({{ loop.index0 }})">View</button></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <div id="noResults" class="empty" style="display:none;">No findings match the current filter.</div>
+    {% else %}
+    <div class="empty">No findings recorded for this scan.</div>
+    {% endif %}
+    </div>
+  </div>
+
+  <!-- Subdomains Table -->
+  <div class="section">
+    <div class="section-header">
+      <h2>Discovered Hosts ({{ total_subdomains }})</h2>
+      <input class="search-box" id="subSearch" placeholder="Search hosts..." oninput="filterSubs()">
+    </div>
+    <div class="table-wrap">
+    {% if subdomains %}
+    <table id="subsTable">
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th onclick="sortSubTable(1)">Domain ↕</th>
+          <th>IP</th>
+          <th>HTTP</th>
+          <th>Title</th>
+          <th>Technologies</th>
+          <th>Findings</th>
+        </tr>
+      </thead>
+      <tbody id="subsBody">
+      {% for s in subdomains %}
+      <tr data-sub-search="{{ s.domain.lower() }}">
+        <td><span class="live-dot {{ 'live' if s.is_live else 'dead' }}"></span>{{ 'Live' if s.is_live else 'Dead' }}</td>
+        <td style="font-family:monospace;font-size:12px;">{{ s.domain }}</td>
+        <td style="color:var(--muted);font-size:12px;">{{ s.ip or '—' }}</td>
+        <td style="color:var(--muted);">{{ s.status or '—' }}</td>
+        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;" title="{{ s.title }}">{{ s.title or '—' }}</td>
+        <td>{% for tech in s.technologies[:3] %}<span class="tech-tag">{{ tech }}</span>{% endfor %}</td>
+        <td>{% if s.findings_count > 0 %}<span class="badge badge-High">{{ s.findings_count }}</span>{% else %}<span style="color:var(--muted)">0</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">No hosts discovered.</div>
+    {% endif %}
+    </div>
+  </div>
+
+</div>
+
+<div class="footer">
+  AutoRecon Pro &mdash; Bug Bounty Automation &mdash; Only use on authorized targets &mdash;
+  Scan ID: {{ scan_id }}
+</div>
+
+<!-- Finding Detail Modal -->
+<div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal" id="modal">
+    <div class="modal-header">
+      <div>
+        <div id="modalTitle" style="font-size:16px;font-weight:700;margin-bottom:4px;"></div>
+        <div id="modalBadge"></div>
+      </div>
+      <span class="modal-close" onclick="closeModal()">✕</span>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<!-- Inline Chart.js (minimal) -->
+<script>
+!function(){"use strict";
+// Tiny Chart.js-compatible implementation using Canvas API
+window.Chart=function(ctx,cfg){
+  this.ctx=ctx;this.cfg=cfg;
+  var c=ctx.canvas,w=c.width=c.offsetWidth*2,h=c.height=c.offsetHeight*2;
+  ctx.scale(2,2);
+  this.draw();
+};
+Chart.prototype.draw=function(){
+  var c=this.ctx,cfg=this.cfg,d=cfg.data,w=c.canvas.width/2,h=c.canvas.height/2;
+  c.clearRect(0,0,w,h);
+  if(cfg.type==='doughnut'){this.drawDoughnut(c,d,w,h);}
+  else if(cfg.type==='bar'){this.drawBar(c,d,w,h);}
+};
+Chart.prototype.drawDoughnut=function(c,d,w,h){
+  var labels=d.labels,vals=d.datasets[0].data,colors=d.datasets[0].backgroundColor;
+  var total=vals.reduce(function(a,b){return a+b;},0);
+  if(!total)return;
+  var cx=w*0.4,cy=h/2,r=Math.min(cx,cy)*0.85,ir=r*0.55;
+  var start=-Math.PI/2;
+  labels.forEach(function(lbl,i){
+    var slice=vals[i]/total*Math.PI*2;
+    c.beginPath();c.moveTo(cx,cy);
+    c.arc(cx,cy,r,start,start+slice);c.closePath();
+    c.fillStyle=colors[i];c.fill();
+    start+=slice;
+  });
+  // Inner circle
+  c.beginPath();c.arc(cx,cy,ir,0,Math.PI*2);c.fillStyle='#161b22';c.fill();
+  // Total text
+  c.fillStyle='#e6edf3';c.font='bold 14px -apple-system,sans-serif';
+  c.textAlign='center';c.textBaseline='middle';c.fillText(total,cx,cy-8);
+  c.font='10px -apple-system,sans-serif';c.fillStyle='#8b949e';c.fillText('findings',cx,cy+10);
+  // Legend
+  var lx=w*0.78,ly=20,lh=18;
+  labels.forEach(function(lbl,i){
+    if(!vals[i])return;
+    c.fillStyle=colors[i];c.fillRect(lx,ly+i*lh,10,10);
+    c.fillStyle='#8b949e';c.font='10px -apple-system,sans-serif';c.textAlign='left';c.textBaseline='top';
+    c.fillText(lbl.slice(0,18)+' ('+vals[i]+')',lx+14,ly+i*lh);
+  });
+};
+Chart.prototype.drawBar=function(c,d,w,h){
+  var labels=d.labels,vals=d.datasets[0].data,colors=d.datasets[0].backgroundColor;
+  var n=labels.length;if(!n)return;
+  var pad={top:10,right:20,bottom:50,left:50};
+  var cw=w-pad.left-pad.right,ch=h-pad.top-pad.bottom;
+  var maxVal=Math.max.apply(null,vals)||1;
+  var bw=Math.max(8,cw/n*0.65),gap=(cw-bw*n)/(n+1);
+  // Axes
+  c.strokeStyle='#30363d';c.lineWidth=1;
+  c.beginPath();c.moveTo(pad.left,pad.top);c.lineTo(pad.left,pad.top+ch);c.lineTo(pad.left+cw,pad.top+ch);c.stroke();
+  // Bars
+  vals.forEach(function(v,i){
+    var bh=v/maxVal*ch;
+    var x=pad.left+gap+(bw+gap)*i;
+    var y=pad.top+ch-bh;
+    c.fillStyle=typeof colors==='string'?colors:colors[i%colors.length];
+    c.fillRect(x,y,bw,bh);
+    // Label
+    c.fillStyle='#8b949e';c.font='9px -apple-system,sans-serif';
+    c.textAlign='center';c.textBaseline='top';
+    var lbl=labels[i].length>12?labels[i].slice(0,10)+'..':labels[i];
+    c.fillText(lbl,x+bw/2,pad.top+ch+4);
+    // Value
+    if(v>0){c.fillStyle='#e6edf3';c.textBaseline='bottom';c.fillText(v,x+bw/2,y-2);}
+  });
+};
+}();
+
+// Data
+var FINDINGS = {{ findings_json }};
+var TYPE_DIST = {{ type_dist_json }};
+var TOP_SUBS = {{ top_subs_json }};
+
+// Charts
+var COLORS = ['#da3633','#fb8500','#d29922','#1f6feb','#238636','#8b949e','#bc8cff','#39d353','#58a6ff','#f78166'];
+window.addEventListener('DOMContentLoaded', function(){
+  // Type Doughnut
+  var dc = document.getElementById('typeChart');
+  if(dc && Object.keys(TYPE_DIST).length){
+    var types=Object.keys(TYPE_DIST).slice(0,8);
+    new Chart(dc.getContext('2d'),{type:'doughnut',data:{
+      labels:types,
+      datasets:[{data:types.map(function(t){return TYPE_DIST[t];}),
+        backgroundColor:COLORS}]
+    }});
+  }
+  // Host Bar
+  var bc = document.getElementById('hostChart');
+  if(bc && TOP_SUBS.length){
+    var hosts=TOP_SUBS.map(function(x){return x[0];});
+    var vals=TOP_SUBS.map(function(x){return x[1];});
+    new Chart(bc.getContext('2d'),{type:'bar',data:{
+      labels:hosts,
+      datasets:[{data:vals,backgroundColor:COLORS}]
+    }});
+  }
+});
+
+// Filtering
+var currentSev='all';
+function setSevFilter(btn,sev){
+  document.querySelectorAll('.filter-btn').forEach(function(b){b.classList.remove('active');});
+  btn.classList.add('active');
+  currentSev=sev;
+  filterFindings();
+}
+function filterFindings(){
+  var q=(document.getElementById('searchBox').value||'').toLowerCase();
+  var rows=document.querySelectorAll('#findingsBody tr');
+  var visible=0;
+  rows.forEach(function(row){
+    var sev=row.getAttribute('data-severity');
+    var search=row.getAttribute('data-search')||'';
+    var sevOk=currentSev==='all'||sev===currentSev;
+    var searchOk=!q||search.indexOf(q)>=0;
+    if(sevOk&&searchOk){row.style.display='';visible++;}
+    else{row.style.display='none';}
+  });
+  var noRes=document.getElementById('noResults');
+  if(noRes)noRes.style.display=visible?'none':'block';
+}
+function filterSubs(){
+  var q=(document.getElementById('subSearch').value||'').toLowerCase();
+  document.querySelectorAll('#subsBody tr').forEach(function(row){
+    var d=row.getAttribute('data-sub-search')||'';
+    row.style.display=(!q||d.indexOf(q)>=0)?'':'none';
+  });
+}
+
+// Table sort
+function sortTable(col){
+  var tbody=document.getElementById('findingsBody');
+  var rows=Array.from(tbody.querySelectorAll('tr'));
+  var asc=tbody.getAttribute('data-sort-col')===String(col)&&tbody.getAttribute('data-sort-dir')==='asc';
+  tbody.setAttribute('data-sort-col',col);
+  tbody.setAttribute('data-sort-dir',asc?'desc':'asc');
+  var sevOrder={Critical:0,High:1,Medium:2,Low:3,Info:4};
+  rows.sort(function(a,b){
+    var va=a.cells[col]?a.cells[col].innerText:'';
+    var vb=b.cells[col]?b.cells[col].innerText:'';
+    if(col===1){va=sevOrder[va]||9;vb=sevOrder[vb]||9;return asc?vb-va:va-vb;}
+    return asc?va.localeCompare(vb):vb.localeCompare(va);
+  });
+  rows.forEach(function(r){tbody.appendChild(r);});
+}
+
+// Modal
+function showFinding(idx){
+  var f=FINDINGS[idx];
+  if(!f)return;
+  var badge='<span class="badge badge-'+f.severity+'">'+f.severity+'</span>';
+  if(f.source==='nuclei')badge+=' <span class="source-badge nuclei-badge">Nuclei '+f.template_id+'</span>';
+  else badge+=' <span class="source-badge">AutoRecon</span>';
+  document.getElementById('modalTitle').textContent=f.type;
+  document.getElementById('modalBadge').innerHTML=badge;
+  var body='';
+  body+='<div class="modal-section"><label>URL</label><div class="code-block">'+esc(f.url)+'</div></div>';
+  if(f.parameter)body+='<div class="modal-section"><label>Parameter</label><div class="code-block">'+esc(f.parameter)+'</div></div>';
+  if(f.payload)body+='<div class="modal-section"><label>Payload</label><div class="code-block">'+esc(f.payload)+'</div></div>';
+  if(f.description)body+='<div class="modal-section"><label>Description</label><p style="color:#adbac7;font-size:13px;line-height:1.6;">'+esc(f.description)+'</p></div>';
+  if(f.evidence)body+='<div class="modal-section"><label>Evidence</label><div class="code-block">'+esc(f.evidence)+'</div></div>';
+  if(f.poc_curl)body+='<div class="modal-section"><label>Proof of Concept</label><div class="code-block" id="pocCode">'+esc(f.poc_curl)+'</div><button class="copy-btn" onclick="copyPoC()">Copy cURL</button></div>';
+  if(f.remediation)body+='<div class="modal-section"><label>Remediation</label><p style="color:#3fb950;font-size:13px;line-height:1.6;">'+esc(f.remediation)+'</p></div>';
+  document.getElementById('modalBody').innerHTML=body;
+  document.getElementById('modalOverlay').classList.add('open');
+}
+function closeModal(){document.getElementById('modalOverlay').classList.remove('open');}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function copyPoC(){
+  var el=document.getElementById('pocCode');
+  if(el)navigator.clipboard.writeText(el.textContent).then(function(){
+    var btn=document.querySelector('.copy-btn');
+    if(btn){btn.textContent='Copied!';setTimeout(function(){btn.textContent='Copy cURL';},2000);}
+  });
+}
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});
+</script>
+</body>
+</html>
