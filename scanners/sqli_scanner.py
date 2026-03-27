@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import random
 import time
 from urllib.parse import urlparse, urlencode, urlunparse, parse_qs
 import httpx
@@ -38,6 +39,24 @@ TIME_PAYLOADS = [
     ("1; WAITFOR DELAY '0:0:5'--", 5),
 ]
 
+EXCLUDED_PATH_PATTERNS = [
+    "/_next/image", "/_next/static", "/__next",
+    "/cdn-cgi/", "/static/", "/assets/", "/images/",
+    "/img/", "/favicon", "/robots.txt", "/sitemap",
+    "/.well-known/", "/webpack",
+]
+EXCLUDED_PARAMS_FOR_PATHS = {"/_next/image": ["url", "w", "q"]}
+GLOBALLY_EXCLUDED_PARAMS = [
+    "width", "height", "size", "format", "quality",
+    "w", "h", "callback", "jsonp", "lang", "locale",
+    "v", "ver", "version", "_", "t", "ts",
+]
+NON_DB_CONTENT_TYPES = [
+    "image/", "video/", "audio/", "font/",
+    "application/octet-stream", "text/css",
+    "text/javascript", "application/javascript",
+]
+
 
 class SQLiScanner(BaseScanner):
     name = "sqli"
@@ -45,22 +64,43 @@ class SQLiScanner(BaseScanner):
     severity = "Critical"
 
     def is_applicable(self, target) -> bool:
-        return isinstance(target, Endpoint) and bool(target.parameters)
+        if not isinstance(target, Endpoint) or not target.parameters:
+            return False
+        return not self._is_excluded_endpoint(target)
+
+    def _is_excluded_endpoint(self, ep: Endpoint) -> bool:
+        path = urlparse(ep.url).path.lower()
+        return any(p in path for p in EXCLUDED_PATH_PATTERNS)
+
+    def _is_excluded_param(self, ep: Endpoint, param: str) -> bool:
+        if param.lower() in GLOBALLY_EXCLUDED_PARAMS:
+            return True
+        path = urlparse(ep.url).path.lower()
+        for path_pattern, excluded in EXCLUDED_PARAMS_FOR_PATHS.items():
+            if path_pattern in path and param.lower() in excluded:
+                return True
+        return False
+
+    def _is_non_db_response(self, r: httpx.Response) -> bool:
+        ct = r.headers.get("content-type", "").lower()
+        return any(ct.startswith(t) for t in NON_DB_CONTENT_TYPES)
 
     async def scan(self, target: Endpoint) -> list[Finding]:
         findings = []
         for param in target.parameters:
-            # Error-based
+            if self._is_excluded_param(target, param):
+                continue
+            await asyncio.sleep(random.uniform(0.3, 0.8))
             f = await self._error_based(target, param)
             if f:
                 findings.append(f)
                 continue
-            # Boolean-based
+            await asyncio.sleep(random.uniform(0.2, 0.5))
             f = await self._boolean_based(target, param)
             if f:
                 findings.append(f)
                 continue
-            # Time-based
+            await asyncio.sleep(random.uniform(0.2, 0.5))
             f = await self._time_based(target, param)
             if f:
                 findings.append(f)
@@ -69,74 +109,75 @@ class SQLiScanner(BaseScanner):
     async def _error_based(self, ep: Endpoint, param: str) -> Finding | None:
         for payload in ERROR_PAYLOADS:
             url = self._inject(ep.url, param, payload)
-            try:
-                r = await self.session.get(url, timeout=12, follow_redirects=True)
-                for pattern, db_type in DB_ERROR_PATTERNS:
-                    if pattern.search(r.text):
-                        return self.make_finding(
-                            url=url, parameter=param, payload=payload,
-                            evidence=f"DB error detected ({db_type}): " + r.text[:300],
-                            description=f"Error-based SQL Injection in '{param}'. "
-                                        f"Database type: {db_type}. Payload: {payload}",
-                            remediation="Use parameterized queries / prepared statements. "
-                                        "Never concatenate user input into SQL queries.",
-                        )
-            except Exception:
+            r = await self._safe_get(url, timeout=12)
+            if r is None:
                 continue
+            if self._is_non_db_response(r):
+                return None
+            for pattern, db_type in DB_ERROR_PATTERNS:
+                if pattern.search(r.text):
+                    return self.make_finding(
+                        url=url, parameter=param, payload=payload,
+                        evidence=f"DB error ({db_type}): " + r.text[:300],
+                        description=f"Error-based SQLi in '{param}'. DB: {db_type}. Payload: {payload}",
+                        remediation="Use parameterized queries. Never concatenate user input into SQL.",
+                    )
         return None
 
     async def _boolean_based(self, ep: Endpoint, param: str) -> Finding | None:
-        try:
-            # Baseline
-            base_r = await self.session.get(ep.url, timeout=10)
-            base_len = len(base_r.text)
-
-            true_url = self._inject(ep.url, param, BOOL_TRUE)
-            false_url = self._inject(ep.url, param, BOOL_FALSE)
-
-            true_r = await self.session.get(true_url, timeout=10)
-            false_r = await self.session.get(false_url, timeout=10)
-
-            true_len = len(true_r.text)
-            false_len = len(false_r.text)
-
-            # True should match baseline, false should differ
-            if abs(true_len - base_len) < 50 and abs(false_len - base_len) > 100:
-                self.severity = "High"
-                return self.make_finding(
-                    url=true_url, parameter=param, payload=BOOL_TRUE,
-                    evidence=f"True condition: {true_len} bytes, False condition: {false_len} bytes (diff: {abs(true_len-false_len)})",
-                    description=f"Boolean-based blind SQL injection in '{param}'.",
-                    remediation="Use parameterized queries / prepared statements.",
-                )
-        except Exception:
-            pass
+        base_r = await self._safe_get(ep.url, timeout=10)
+        if base_r is None or self._is_non_db_response(base_r):
+            return None
+        base_len = len(base_r.text)
+        true_r = await self._safe_get(self._inject(ep.url, param, BOOL_TRUE), timeout=10)
+        false_r = await self._safe_get(self._inject(ep.url, param, BOOL_FALSE), timeout=10)
+        if true_r is None or false_r is None:
+            return None
+        if abs(len(true_r.text) - base_len) < 50 and abs(len(false_r.text) - base_len) > 100:
+            self.severity = "High"
+            return self.make_finding(
+                url=self._inject(ep.url, param, BOOL_TRUE),
+                parameter=param, payload=BOOL_TRUE,
+                evidence=f"True: {len(true_r.text)}b, False: {len(false_r.text)}b (diff: {abs(len(true_r.text)-len(false_r.text))})",
+                description=f"Boolean-based blind SQLi in '{param}'.",
+                remediation="Use parameterized queries.",
+            )
         return None
 
     async def _time_based(self, ep: Endpoint, param: str) -> Finding | None:
-        try:
-            base_start = time.monotonic()
-            await self.session.get(ep.url, timeout=10)
-            base_time = time.monotonic() - base_start
+        """Triple-verified: ALL 3 attempts must delay to confirm."""
+        base_times = []
+        for _ in range(3):
+            start = time.monotonic()
+            r = await self._safe_get(ep.url, timeout=15)
+            base_times.append(time.monotonic() - start)
+            if r is None or self._is_non_db_response(r):
+                return None
+            await asyncio.sleep(random.uniform(0.2, 0.5))
+        base_time = sum(base_times) / 3
 
-            for payload, sleep_secs in TIME_PAYLOADS:
-                url = self._inject(ep.url, param, payload)
-                try:
-                    start = time.monotonic()
-                    await self.session.get(url, timeout=sleep_secs + 6)
-                    elapsed = time.monotonic() - start
-                    if elapsed >= (base_time + sleep_secs - 1):
-                        self.severity = "High"
-                        return self.make_finding(
-                            url=url, parameter=param, payload=payload,
-                            evidence=f"Response delayed by {elapsed:.1f}s (baseline: {base_time:.1f}s)",
-                            description=f"Time-based blind SQL injection in '{param}'.",
-                            remediation="Use parameterized queries / prepared statements.",
-                        )
-                except Exception:
-                    continue
-        except Exception:
-            pass
+        for payload, sleep_secs in TIME_PAYLOADS:
+            url = self._inject(ep.url, param, payload)
+            delays = []
+            for attempt in range(3):
+                start = time.monotonic()
+                await self._safe_get(url, timeout=sleep_secs + 8)
+                elapsed = time.monotonic() - start
+                delays.append(elapsed)
+                if elapsed < (base_time + sleep_secs - 1.5):
+                    break
+                if attempt < 2:
+                    await asyncio.sleep(random.uniform(0.5, 1.0))
+
+            if len(delays) == 3 and all(d >= (base_time + sleep_secs - 1.5) for d in delays):
+                avg = sum(delays) / 3
+                self.severity = "High"
+                return self.make_finding(
+                    url=url, parameter=param, payload=payload,
+                    evidence=f"Consistent delay ~{avg:.1f}s (baseline: {base_time:.1f}s, verified 3/3)",
+                    description=f"Time-based blind SQLi in '{param}' (verified 3x).",
+                    remediation="Use parameterized queries.",
+                )
         return None
 
     def _inject(self, url: str, param: str, value: str) -> str:

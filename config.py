@@ -9,9 +9,9 @@ class Config:
     target: str
     scan_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     output_dir: Path = Path("./reports")
-    concurrency: int = 50
+    concurrency: int = 50     # Used for recon/probe phases
     timeout: int = 10
-    rps: float = 10.0
+    rps: float = 2.0          # FIXED: lowered from 10.0 — safer for WAFs
     max_crawl_depth: int = 3
     max_urls_per_host: int = 500
     resume: bool = False

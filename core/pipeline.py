@@ -24,6 +24,14 @@ SEVERITY_COLORS = {
     "Info": "dim",
 }
 
+# -----------------------------------------------------------------------
+# Concurrency limits — scanning is much more sensitive than recon
+# -----------------------------------------------------------------------
+SCAN_CONCURRENCY = 5      # max parallel vuln scanner tasks
+PROBE_CONCURRENCY = 50    # HTTP probing (fast, low payload)
+DNS_CONCURRENCY = 200     # DNS resolution (very fast)
+CRAWL_CONCURRENCY = 10    # Crawling per host
+
 
 class Pipeline:
     def __init__(self, config: Config):
@@ -55,42 +63,36 @@ class Pipeline:
                 border_style="cyan"
             ))
 
-            # --- Phase 1: Recon ---
             if "recon" not in completed:
                 await self._phase_recon()
                 await self.db.mark_phase_complete(self.config.scan_id, "recon")
             else:
                 console.print("[dim]Phase 1 (Recon): Skipped (resumed)[/]")
 
-            # --- Phase 2: HTTP Probe ---
             if "probe" not in completed:
                 await self._phase_probe()
                 await self.db.mark_phase_complete(self.config.scan_id, "probe")
             else:
                 console.print("[dim]Phase 2 (Probe): Skipped (resumed)[/]")
 
-            # --- Phase 3: Discovery ---
             if "discovery" not in completed:
                 await self._phase_discovery()
                 await self.db.mark_phase_complete(self.config.scan_id, "discovery")
             else:
                 console.print("[dim]Phase 3 (Discovery): Skipped (resumed)[/]")
 
-            # --- Phase 4: Scan ---
             if "scan" not in completed:
                 await self._phase_scan()
                 await self.db.mark_phase_complete(self.config.scan_id, "scan")
             else:
                 console.print("[dim]Phase 4 (Scan): Skipped (resumed)[/]")
 
-            # --- Phase 4b: Nuclei ---
             if "nuclei" not in completed and self.config.nuclei_enabled:
                 await self._phase_nuclei()
                 await self.db.mark_phase_complete(self.config.scan_id, "nuclei")
             else:
                 console.print("[dim]Phase 4b (Nuclei): Skipped[/]")
 
-            # --- Phase 5: Report ---
             await self._phase_report()
             await self.db.complete_scan(self.config.scan_id)
 
@@ -125,9 +127,8 @@ class Pipeline:
             progress.update(task, total=len(subdomains), completed=len(subdomains),
                             description=f"Found {len(subdomains)} subdomains")
 
-            # DNS resolution
             resolve_task = progress.add_task("Resolving DNS...", total=len(subdomains))
-            sem = asyncio.Semaphore(200)
+            sem = asyncio.Semaphore(DNS_CONCURRENCY)
 
             async def resolve_one(sub):
                 async with sem:
@@ -137,7 +138,6 @@ class Pipeline:
 
             await asyncio.gather(*[resolve_one(s) for s in subdomains], return_exceptions=True)
 
-        # WHOIS
         whois_data = await whois_lookup(self.config.target)
         if whois_data:
             console.print(f"  [dim]WHOIS Registrar: {whois_data.get('registrar', 'N/A')}[/]")
@@ -158,7 +158,7 @@ class Pipeline:
             TimeElapsedColumn(), console=console
         ) as progress:
             task = progress.add_task("Probing hosts...", total=len(subdomains))
-            sem = asyncio.Semaphore(self.config.concurrency)
+            sem = asyncio.Semaphore(PROBE_CONCURRENCY)
 
             async def probe_one(sub):
                 async with sem:
@@ -179,31 +179,27 @@ class Pipeline:
         from discovery.api_detector import ApiDetector
 
         live_hosts = await self.db.get_subdomains(self.config.scan_id, live_only=True)
-        all_endpoints = []
 
         with Progress(
             SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
             TimeElapsedColumn(), console=console
         ) as progress:
-            # Crawl
             crawl_task = progress.add_task("Crawling live hosts...", total=len(live_hosts))
             crawler = Crawler(self.session, self.rate_limiter, self.config)
             js_analyzer = JsAnalyzer(self.session)
             api_detector = ApiDetector(self.session)
-            sem = asyncio.Semaphore(10)
+            sem = asyncio.Semaphore(CRAWL_CONCURRENCY)
 
             async def crawl_host(sub):
                 async with sem:
                     endpoints = await crawler.crawl(sub.final_url or f"https://{sub.domain}")
                     for ep in endpoints:
                         await self.db.upsert_endpoint(self.config.scan_id, ep)
-                    # JS analysis
                     js_eps = [e for e in endpoints if e.url.endswith(".js")]
                     for js_ep in js_eps[:20]:
                         extra = await js_analyzer.analyze(js_ep.url)
                         for ep in extra:
                             await self.db.upsert_endpoint(self.config.scan_id, ep)
-                    # API spec detection
                     api_eps = await api_detector.detect(sub.final_url or f"https://{sub.domain}")
                     for ep in api_eps:
                         await self.db.upsert_endpoint(self.config.scan_id, ep)
@@ -211,7 +207,6 @@ class Pipeline:
 
             await asyncio.gather(*[crawl_host(h) for h in live_hosts], return_exceptions=True)
 
-            # Wayback
             wayback_task = progress.add_task("Fetching Wayback Machine...", total=1)
             wayback = WaybackFetcher(self.session)
             wb_endpoints = await wayback.fetch(self.config.target)
@@ -224,6 +219,7 @@ class Pipeline:
 
     async def _phase_scan(self):
         console.print("\n[bold cyan]Phase 4: Vulnerability Scanning[/]")
+        console.print(f"  [dim]Scan concurrency: {SCAN_CONCURRENCY} (rate-limit safe)[/]")
 
         from scanners.xss_scanner import XSSScanner
         from scanners.sqli_scanner import SQLiScanner
@@ -261,9 +257,17 @@ class Pipeline:
         ]
 
         finding_count = 0
-        sem = asyncio.Semaphore(self.config.concurrency)
 
-        async def run_scanner(scanner, target):
+        # ---------------------------------------------------------------
+        # FIXED: Use SCAN_CONCURRENCY (5) instead of config.concurrency (50)
+        # Active scanners send many payloads per endpoint — keep it slow
+        # ---------------------------------------------------------------
+        active_sem = asyncio.Semaphore(SCAN_CONCURRENCY)
+
+        # Passive scanners (just read headers/responses) can go faster
+        passive_sem = asyncio.Semaphore(min(self.config.concurrency, 20))
+
+        async def run_scanner(scanner, target, sem):
             async with sem:
                 try:
                     findings = await scanner.scan(target)
@@ -280,19 +284,37 @@ class Pipeline:
             BarColumn(), TextColumn("{task.completed}/{task.total}"),
             TimeElapsedColumn(), console=console
         ) as progress:
-            # Active + passive on endpoints
-            ep_task = progress.add_task(
-                "Scanning endpoints...",
-                total=len(endpoints) * (len(active_scanners) + len(passive_scanners))
+            # Active scanners — low concurrency
+            active_total = sum(
+                1 for scanner in active_scanners
+                for ep in endpoints
+                if scanner.is_applicable(ep)
             )
-            tasks = []
-            for scanner in active_scanners + passive_scanners:
+            ep_task = progress.add_task("Active scanning...", total=active_total or 1)
+            active_tasks = []
+            for scanner in active_scanners:
                 for ep in endpoints:
                     if scanner.is_applicable(ep):
-                        t = asyncio.create_task(run_scanner(scanner, ep))
+                        t = asyncio.create_task(run_scanner(scanner, ep, active_sem))
                         t.add_done_callback(lambda _: progress.advance(ep_task))
-                        tasks.append(t)
-            await asyncio.gather(*tasks, return_exceptions=True)
+                        active_tasks.append(t)
+            await asyncio.gather(*active_tasks, return_exceptions=True)
+
+            # Passive scanners — higher concurrency ok
+            passive_total = sum(
+                1 for scanner in passive_scanners
+                for ep in endpoints
+                if scanner.is_applicable(ep)
+            )
+            passive_task = progress.add_task("Passive scanning...", total=passive_total or 1)
+            passive_tasks = []
+            for scanner in passive_scanners:
+                for ep in endpoints:
+                    if scanner.is_applicable(ep):
+                        t = asyncio.create_task(run_scanner(scanner, ep, passive_sem))
+                        t.add_done_callback(lambda _: progress.advance(passive_task))
+                        passive_tasks.append(t)
+            await asyncio.gather(*passive_tasks, return_exceptions=True)
 
             # Host-level scanners
             host_task = progress.add_task(
@@ -301,7 +323,7 @@ class Pipeline:
             host_tasks = []
             for scanner in host_scanners:
                 for sub in subdomains:
-                    t = asyncio.create_task(run_scanner(scanner, sub))
+                    t = asyncio.create_task(run_scanner(scanner, sub, passive_sem))
                     t.add_done_callback(lambda _: progress.advance(host_task))
                     host_tasks.append(t)
             await asyncio.gather(*host_tasks, return_exceptions=True)
