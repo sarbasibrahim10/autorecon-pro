@@ -57,6 +57,9 @@ NON_DB_CONTENT_TYPES = [
     "text/javascript", "application/javascript",
 ]
 
+# Max params to test in parallel per endpoint — keeps it fast but not spammy
+PARAM_CONCURRENCY = 3
+
 
 class SQLiScanner(BaseScanner):
     name = "sqli"
@@ -86,24 +89,40 @@ class SQLiScanner(BaseScanner):
         return any(ct.startswith(t) for t in NON_DB_CONTENT_TYPES)
 
     async def scan(self, target: Endpoint) -> list[Finding]:
+        # Filter out excluded params first
+        valid_params = [
+            p for p in target.parameters
+            if not self._is_excluded_param(target, p)
+        ]
+        if not valid_params:
+            return []
+
+        # ---------------------------------------------------------------
+        # Parallel param scanning — test up to 3 params simultaneously
+        # Much faster than sequential without hammering the server
+        # ---------------------------------------------------------------
+        sem = asyncio.Semaphore(PARAM_CONCURRENCY)
         findings = []
-        for param in target.parameters:
-            if self._is_excluded_param(target, param):
-                continue
-            await asyncio.sleep(random.uniform(0.3, 0.8))
-            f = await self._error_based(target, param)
-            if f:
-                findings.append(f)
-                continue
-            await asyncio.sleep(random.uniform(0.2, 0.5))
-            f = await self._boolean_based(target, param)
-            if f:
-                findings.append(f)
-                continue
-            await asyncio.sleep(random.uniform(0.2, 0.5))
-            f = await self._time_based(target, param)
-            if f:
-                findings.append(f)
+
+        async def scan_param(param: str) -> Finding | None:
+            async with sem:
+                f = await self._error_based(target, param)
+                if f:
+                    return f
+                f = await self._boolean_based(target, param)
+                if f:
+                    return f
+                return await self._time_based(target, param)
+
+        results = await asyncio.gather(
+            *[scan_param(p) for p in valid_params],
+            return_exceptions=True
+        )
+
+        for r in results:
+            if r and isinstance(r, Finding):
+                findings.append(r)
+
         return findings
 
     async def _error_based(self, ep: Endpoint, param: str) -> Finding | None:
@@ -129,23 +148,28 @@ class SQLiScanner(BaseScanner):
         if base_r is None or self._is_non_db_response(base_r):
             return None
         base_len = len(base_r.text)
-        true_r = await self._safe_get(self._inject(ep.url, param, BOOL_TRUE), timeout=10)
-        false_r = await self._safe_get(self._inject(ep.url, param, BOOL_FALSE), timeout=10)
+
+        true_r, false_r = await asyncio.gather(
+            self._safe_get(self._inject(ep.url, param, BOOL_TRUE), timeout=10),
+            self._safe_get(self._inject(ep.url, param, BOOL_FALSE), timeout=10),
+        )
+
         if true_r is None or false_r is None:
             return None
+
         if abs(len(true_r.text) - base_len) < 50 and abs(len(false_r.text) - base_len) > 100:
             self.severity = "High"
             return self.make_finding(
                 url=self._inject(ep.url, param, BOOL_TRUE),
                 parameter=param, payload=BOOL_TRUE,
-                evidence=f"True: {len(true_r.text)}b, False: {len(false_r.text)}b (diff: {abs(len(true_r.text)-len(false_r.text))})",
+                evidence=f"True: {len(true_r.text)}b  False: {len(false_r.text)}b  diff: {abs(len(true_r.text)-len(false_r.text))}",
                 description=f"Boolean-based blind SQLi in '{param}'.",
                 remediation="Use parameterized queries.",
             )
         return None
 
     async def _time_based(self, ep: Endpoint, param: str) -> Finding | None:
-        """Triple-verified: ALL 3 attempts must delay to confirm."""
+        """Triple-verified — ALL 3 attempts must delay."""
         base_times = []
         for _ in range(3):
             start = time.monotonic()
@@ -153,7 +177,6 @@ class SQLiScanner(BaseScanner):
             base_times.append(time.monotonic() - start)
             if r is None or self._is_non_db_response(r):
                 return None
-            await asyncio.sleep(random.uniform(0.2, 0.5))
         base_time = sum(base_times) / 3
 
         for payload, sleep_secs in TIME_PAYLOADS:
@@ -167,14 +190,14 @@ class SQLiScanner(BaseScanner):
                 if elapsed < (base_time + sleep_secs - 1.5):
                     break
                 if attempt < 2:
-                    await asyncio.sleep(random.uniform(0.5, 1.0))
+                    await asyncio.sleep(random.uniform(0.3, 0.7))
 
             if len(delays) == 3 and all(d >= (base_time + sleep_secs - 1.5) for d in delays):
                 avg = sum(delays) / 3
                 self.severity = "High"
                 return self.make_finding(
                     url=url, parameter=param, payload=payload,
-                    evidence=f"Consistent delay ~{avg:.1f}s (baseline: {base_time:.1f}s, verified 3/3)",
+                    evidence=f"Delay ~{avg:.1f}s (baseline: {base_time:.1f}s, verified 3/3)",
                     description=f"Time-based blind SQLi in '{param}' (verified 3x).",
                     remediation="Use parameterized queries.",
                 )
